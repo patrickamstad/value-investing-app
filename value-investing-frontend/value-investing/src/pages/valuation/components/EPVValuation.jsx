@@ -30,7 +30,7 @@ function EPVValuation({ epvObject }) {
           <ValuationSubCard
             title="Current Price"
             value={epvObject.current_price}
-            currency={epvObject.epv_currency}
+            currency={epvObject.price_currency}
             rounding={2}
           />
         </div>
@@ -41,13 +41,13 @@ function EPVValuation({ epvObject }) {
               <ValuationSubCard
                 title="Revenue (TTM)"
                 value={epvObject.revenue_ttm}
-                currency={epvObject.price_currency}
+                currency={epvObject.epv_currency}
                 rounding={1}
               />
               <ValuationSubCard
                 title="Revenue (Avg)"
                 value={epvObject.avg_revenue}
-                currency={epvObject.price_currency}
+                currency={epvObject.epv_currency}
                 rounding={1}
               />
             </div>

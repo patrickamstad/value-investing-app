@@ -30,7 +30,7 @@ function App() {
             path="/google-auth/callback"
             element={<GoogleCallback />}></Route>
           <Route path="/screener" element={<ContentScreenerPageNew />}></Route>
-          <Route path="/valuation" element={<ContentValuationPage />}></Route>
+          {/* <Route path="/valuation" element={<ContentValuationPage />}></Route> */}
           <Route path="/analysis" element={<ContentAnalysisPage />}></Route>
           <Route path="/watchlist" element={<WatchlistPage />}></Route>
           <Route path="/mcc" element={<ContentMCCPage />}></Route>

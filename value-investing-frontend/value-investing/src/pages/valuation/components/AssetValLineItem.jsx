@@ -14,6 +14,8 @@ function AssetValLineItem({
   handleMultiplierChange,
   category,
   scaling = 1,
+  displayDivisor = 1,
+  disabled = false,
 }) {
   return (
     <TableRow className={`custom-table-row ${open ? "open" : ""}`}>
@@ -29,7 +31,8 @@ function AssetValLineItem({
           <OutlinedInput
             onChange={(e) => handleChange(e, category, metric)}
             type="number"
-            value={(value / scaling).toFixed(0)}
+            value={(value / scaling / displayDivisor).toFixed(0)}
+            disabled={disabled}
             size="small"
             className="custom-input-valuation-table liquidation-value"
           />
@@ -42,13 +45,10 @@ function AssetValLineItem({
           <OutlinedInput
             value={multiplier}
             onChange={(e) => handleMultiplierChange(e, category, metric)}
-            // disabled={isDerived}
+            disabled={disabled}
             type="number"
-            // value={bull}
             size="small"
             className="custom-input-valuation-table liquidation-value"
-            // onBlur={(e) => handleChange(e, metricName, 1)}
-            // onChange={(e) => handleChange(e, metricName, 2)}
           />
         </Collapse>
       </TableCell>
@@ -57,7 +57,7 @@ function AssetValLineItem({
         className={`custom-cell ${open ? "" : "no-padding-cell"}`}>
         {" "}
         <Collapse in={open} timeout="auto" unmountOnExit>
-          {((multiplier * value) / scaling).toFixed(0)}
+          {((multiplier * value) / scaling / displayDivisor).toFixed(0)}
         </Collapse>
       </TableCell>
     </TableRow>

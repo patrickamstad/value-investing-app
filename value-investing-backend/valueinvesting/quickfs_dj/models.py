@@ -12,8 +12,8 @@ class TradedCompanies(models.Model):
     qfs_symbol = models.CharField(max_length=30, unique=True, verbose_name="QFS Symbol")
     exchange = models.CharField(max_length=30, verbose_name="Exchange")
     name = models.CharField(max_length=500, verbose_name="Name")
-    company_type = models.CharField(max_length=300, verbose_name="Company Type")
-    currency = models.CharField(max_length=30, verbose_name="Currency")
+    company_type = models.CharField(max_length=300, null=True, blank=True, verbose_name="Company Type")
+    currency = models.CharField(max_length=30, null=True, blank=True, verbose_name="Currency")
     industry = models.CharField(max_length=300, null=True, blank=True, verbose_name="Industry")
     has_new_financials = models.BooleanField(null=True, blank=True, default=True)
     last_close_price = models.FloatField(null=True, blank=True)
@@ -26,6 +26,32 @@ class TradedCompanies(models.Model):
         'currency' : 'comp',
         'industry' : 'comp',
     }
+
+class FxRate(models.Model):
+    """
+    One row per currency pair, always in the direction we actually need:
+    from_currency = a fundamentals row's reporting_currency (what was filed)
+    to_currency   = TradedCompanies.currency (what the stock trades/prices in)
+    rate          = units of to_currency per 1 unit of from_currency
+
+    Example: YRD.US files its financials in CNY but trades in USD.
+        from_currency = "CNY", to_currency = "USD", rate = 0.14
+    To convert a filed amount into trading currency: amount_to = amount_from * rate.
+    e.g. revenue of CNY 5,572,209,105 -> 5,572,209,105 * 0.14 ~= USD 780,109,275.
+
+    Only this one direction is ever looked up (every consumer converts
+    reporting_currency -> trading_currency, never the reverse), so we only
+    fetch/store that direction. If some future use case ever needed the
+    reverse (USD -> CNY), compute it as 1/rate from this same row rather
+    than storing and refreshing a second, independently-drifting row.
+    """
+    from_currency = models.CharField(max_length=10, db_index=True)
+    to_currency = models.CharField(max_length=10, db_index=True)
+    rate = models.FloatField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('from_currency', 'to_currency')
 
 class Valuation(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
@@ -108,6 +134,7 @@ class LatestIncomeStatementAnnual(models.Model):
 class IncomeStatementAnnual(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
     period_end_date = models.DateField(db_index=True)
+    reporting_currency = models.CharField(max_length=10, null=True, blank=True, verbose_name="Reporting Currency")
     revenue = models.FloatField(null=True, blank=True, verbose_name="Revenue")
     cogs = models.FloatField(null=True, blank=True, verbose_name="Cost of Goods Sold (COGS)")
     gross_profit = models.FloatField(null=True, blank=True, verbose_name="Gross Profit")
@@ -203,6 +230,7 @@ class IncomeStatementAnnual(models.Model):
 class IncomeStatementQuarter(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
     period_end_date = models.DateField(db_index=True)
+    reporting_currency = models.CharField(max_length=10, null=True, blank=True)
     revenue = models.FloatField(null=True, blank=True)
     cogs = models.FloatField(null=True, blank=True)
     gross_profit = models.FloatField(null=True, blank=True)
@@ -311,6 +339,7 @@ class LatestBalanceSheetAnnual(models.Model):
 class BalanceSheetAnnual(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
     period_end_date = models.DateField(db_index=True)
+    reporting_currency = models.CharField(max_length=10, null=True, blank=True, verbose_name="Reporting Currency")
     cash_and_equiv = models.FloatField(null=True, blank=True, verbose_name="Cash and Equivalents")
     st_investments = models.FloatField(null=True, blank=True, verbose_name="Short-Term Investments")
     receivables = models.FloatField(null=True, blank=True, verbose_name="Accounts Receivable")
@@ -492,6 +521,7 @@ class LatestBalanceSheetQuarter(models.Model):
 class BalanceSheetQuarter(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
     period_end_date = models.DateField(db_index=True)
+    reporting_currency = models.CharField(max_length=10, null=True, blank=True)
     cash_and_equiv = models.FloatField(null=True, blank=True, db_index=True)
     st_investments = models.FloatField(null=True, blank=True)
     receivables = models.FloatField(null=True, blank=True)
@@ -595,6 +625,7 @@ class LatestCashFlowStatementAnnual(models.Model):
 class CashFlowStatementAnnual(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
     period_end_date = models.DateField(db_index=True)
+    reporting_currency = models.CharField(max_length=10, null=True, blank=True, verbose_name="Reporting Currency")
     cfo_net_income = models.FloatField(null=True, blank=True, verbose_name="Net Income (CFO)")
     cfo_da = models.FloatField(null=True, blank=True, verbose_name="Depreciation and Amortization (CFO)")
     cfo_receivables = models.FloatField(null=True, blank=True, verbose_name="Accounts Receivables (CFO)")
@@ -681,6 +712,7 @@ class CashFlowStatementAnnual(models.Model):
 class CashFlowStatementQuarter(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
     period_end_date = models.DateField(db_index=True)
+    reporting_currency = models.CharField(max_length=10, null=True, blank=True)
     cfo_net_income = models.FloatField(null=True, blank=True)
     cfo_da = models.FloatField(null=True, blank=True)
     cfo_receivables = models.FloatField(null=True, blank=True)
@@ -1160,10 +1192,25 @@ class KeyRatiosQuarter(models.Model):
 
 
 #this model combines all fields from the other models. So we have a single table that we can query for the screen functionality
+#
+#Populated by migrations/quickfs_database/migrate_screener_data.py from TradedCompanies, Valuation,
+#IncomeStatementAnnual, BalanceSheetAnnual/Quarter, and CashFlowStatementAnnual. The market_cap_y/
+#price_to_book_y/roe_y/etc. columns are sourced from KeyRatiosAnnual/KeyRatiosQuarter, which date back
+#to the old QuickFS data provider and are no longer refreshed (EODHD, the current provider, doesn't
+#supply equivalent pre-computed ratios) - treat those columns as frozen/legacy until removed.
+#
+#Currency guarantee: every other numeric column on a given row is expressed in that company's trading
+#currency (= TradedCompanies.currency, the `currency` field below), never its raw filing currency.
+#For a company like YRD.US (files in CNY, trades in USD), revenue_y/cogs_y/net_income_y/etc. are all
+#already converted to USD before being written here - the FX conversion happens once, upstream in
+#migrate_screener_data.py, never on read. See FxRate for the conversion rates used.
 class ScreenerData(models.Model):
     qfs_symbol = models.ForeignKey(TradedCompanies, to_field='qfs_symbol', on_delete=models.CASCADE, db_index=True)
 
     #IMPORTANT: Whenever you add new fields you also need to add them to the metadata attribute at the bottom
+
+    #currency all numeric columns on this row are expressed in (= TradedCompanies.currency, the trading currency)
+    currency = models.CharField(max_length=10, null=True, blank=True, verbose_name="Currency")
 
     #TradedCompany fields
     ticker = models.CharField(max_length=30, null=True, blank=True)
@@ -1509,6 +1556,7 @@ class ScreenerData(models.Model):
     'name' : 'Company Info',
     'industry' : 'Company Info',
     'last_close_price' : 'Company Info',
+    'currency' : 'Company Info',
 
     #valuation fields
     'epv_business': 'valuation',

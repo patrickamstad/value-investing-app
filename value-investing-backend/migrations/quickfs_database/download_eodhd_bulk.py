@@ -18,9 +18,8 @@ S3_PREFIX = "eodhd-fundamentals-bulk"
 
 BULK_PAGE_SIZE = 500  # max companies per request; each request costs 100 API credits
 BASE_URL = "https://eodhd.com/api"
-
-# Tracks completed exchanges across runs — delete to start fresh
-PROGRESS_FILE = Path(__file__).parent / "bulk_download_progress.txt"
+MAX_RETRIES = 3
+RETRY_BACKOFF = 10  # seconds; multiplied by attempt number (10s, 20s, 30s)
 
 log_dir = Path(__file__).parent / "logs"
 log_dir.mkdir(exist_ok=True)
@@ -39,12 +38,6 @@ s3 = boto3.client(
     aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
     region_name=os.environ.get("AWS_REGION", "us-east-1"),
 )
-
-
-def _load_progress() -> set[str]:
-    if not PROGRESS_FILE.exists():
-        return set()
-    return set(PROGRESS_FILE.read_text().splitlines())
 
 
 def _s3_key(exchange_code: str, ticker_exchange: str) -> str:
@@ -91,9 +84,14 @@ def normalize_company(company: dict) -> dict:
         for k, v in sec.items():
             if k.startswith("yearly_last_"):
                 if isinstance(v, dict) and v.get("date") and v["date"] != "0000-00-00":
+                    # Bulk periods already carry their own currency_symbol (verified
+                    # against a real bulk response), but fall back to the section-level
+                    # currency_symbol just in case a period is ever missing it.
+                    v.setdefault("currency_symbol", sec.get("currency_symbol"))
                     yearly[v["date"]] = v
             elif k.startswith("quarterly_last_"):
                 if isinstance(v, dict) and v.get("date") and v["date"] != "0000-00-00":
+                    v.setdefault("currency_symbol", sec.get("currency_symbol"))
                     quarterly[v["date"]] = v
             else:
                 preserved[k] = v
@@ -128,22 +126,36 @@ def _fetch_bulk_page(exchange_code: str, offset: int) -> list[dict]:
         "version": "1.2",
         "fmt": "json",
     }
-    # Large exchanges (US, NASDAQ) can take several minutes — generous timeout.
-    resp = requests.get(f"{BASE_URL}/bulk-fundamentals/{exchange_code}", params=params, timeout=600)
+    url = f"{BASE_URL}/bulk-fundamentals/{exchange_code}"
 
-    while resp.status_code == 429:
-        retry_after = int(resp.headers.get("Retry-After", 60))
-        logging.warning(f"[{exchange_code}] 429 rate limit — sleeping {retry_after}s")
-        time.sleep(retry_after)
-        resp = requests.get(f"{BASE_URL}/bulk-fundamentals/{exchange_code}", params=params, timeout=600)
+    for attempt in range(1, MAX_RETRIES + 1):
+        # Large exchanges (US, NASDAQ) can take several minutes — generous timeout.
+        resp = requests.get(url, params=params, timeout=600)
 
-    resp.raise_for_status()
-    data = resp.json()
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        return list(data.values())
-    return []
+        while resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", 60))
+            logging.warning(f"[{exchange_code}] 429 rate limit — sleeping {retry_after}s")
+            time.sleep(retry_after)
+            resp = requests.get(url, params=params, timeout=600)
+
+        if resp.status_code >= 500:
+            wait = RETRY_BACKOFF * attempt
+            logging.warning(
+                f"[{exchange_code}] offset={offset}: HTTP {resp.status_code} "
+                f"(attempt {attempt}/{MAX_RETRIES}) — retrying in {wait}s"
+            )
+            time.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return list(data.values())
+        return []
+
+    raise requests.HTTPError(f"[{exchange_code}] offset={offset}: failed after {MAX_RETRIES} retries")
 
 
 def process_exchange(exchange_code: str) -> tuple[int, int]:
@@ -200,33 +212,25 @@ def process_exchange(exchange_code: str) -> tuple[int, int]:
 if __name__ == "__main__":
     logging.info("=== download_eodhd_bulk.py start ===")
 
-    already_done = _load_progress()
-    if already_done:
-        logging.info(f"Resuming — {len(already_done)} exchanges already completed, skipping these")
-
     exchanges = get_exchanges(API_TOKEN)
     logging.info(f"Found {len(exchanges)} exchanges from EODHD")
 
     total_companies = 0
     total_api_calls = 0
 
-    with open(PROGRESS_FILE, "a") as progress_f:
-        for exchange in exchanges[:1]:
-            code = exchange.get("Code", "")
-            if not code or code in already_done:
-                continue
-            name = exchange.get("Name", code)
-            logging.info(f"[{code}] {name} — starting bulk download...")
-            try:
-                count, calls = process_exchange(code)
-                total_companies += count
-                total_api_calls += calls
-                if calls > 0:
-                    progress_f.write(code + "\n")
-                    progress_f.flush()
-                logging.info(f"[{code}] done — {count} companies, {calls} API calls (~{calls * 100} credits)")
-            except Exception as e:
-                logging.error(f"[{code}] exchange failed: {e}")
+    for exchange in exchanges:
+        code = exchange.get("Code", "")
+        if not code:
+            continue
+        name = exchange.get("Name", code)
+        logging.info(f"[{code}] {name} — starting bulk download...")
+        try:
+            count, calls = process_exchange(code)
+            total_companies += count
+            total_api_calls += calls
+            logging.info(f"[{code}] done — {count} companies, {calls} API calls (~{calls * 100} credits)")
+        except Exception as e:
+            logging.error(f"[{code}] exchange failed: {e}")
 
     logging.info(
         f"=== download_eodhd_bulk.py complete — "

@@ -9,6 +9,7 @@ import logging
 import psycopg2
 import pandas as pd
 import boto3
+from botocore.config import Config
 from datetime import date as _date
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,7 +39,7 @@ MIGRATE_CF_STATEMENT_DATA     = True
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 BATCH_SIZE   = 500   # flush to DB after accumulating this many companies
-S3_WORKERS   = 20   # parallel threads for S3 downloads + JSON parsing
+S3_WORKERS   = 3    # parallel threads for S3 downloads + JSON parsing
 S3_BUCKET    = os.environ["S3_BUCKET_NAME"]
 S3_PREFIX_HISTORICAL = "eodhd-fundamentals"
 S3_PREFIX_BULK       = "eodhd-fundamentals-bulk"
@@ -60,6 +61,7 @@ s3 = boto3.client(
     aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
     aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
     region_name=os.environ.get("AWS_REGION", "us-east-1"),
+    config=Config(max_pool_connections=S3_WORKERS),
 )
 
 # ── Table registry ─────────────────────────────────────────────────────────────
@@ -353,7 +355,7 @@ def main():
     keys = list_s3_keys(prefix)
 
     # for debugging: just process the first 10 keys
-    keys = keys[:1000]
+    # keys = keys[:1000]
 
     logging.info(f"Found {len(keys)} JSON files in S3")
 
@@ -361,22 +363,28 @@ def main():
     processed  = 0
     failed     = 0
 
+    # Submit keys in chunks so only CHUNK_SIZE futures exist in memory at once.
+    # Submitting all futures upfront causes unbounded memory growth on large key sets.
+    CHUNK_SIZE = S3_WORKERS * BATCH_SIZE
+
     with ThreadPoolExecutor(max_workers=S3_WORKERS) as pool:
-        futures = [pool.submit(_download_and_process, key) for key in keys]
+        for chunk_start in range(0, len(keys), CHUNK_SIZE):
+            chunk = keys[chunk_start:chunk_start + CHUNK_SIZE]
+            futures = [pool.submit(_download_and_process, key) for key in chunk]
 
-        for future in as_completed(futures):
-            rows = future.result()
-            if rows is None:
-                failed += 1
-                continue
+            for future in as_completed(futures):
+                rows = future.result()
+                if rows is None:
+                    failed += 1
+                    continue
 
-            for k in batch:
-                batch[k].extend(rows[k])
-            processed += 1
+                for k in batch:
+                    batch[k].extend(rows[k])
+                processed += 1
 
-            if processed % BATCH_SIZE == 0:
-                flush_batch(conn, batch, registry)
-                logging.info(f"Flushed batch — processed={processed}, failed={failed}")
+                if processed % BATCH_SIZE == 0:
+                    flush_batch(conn, batch, registry)
+                    logging.info(f"Flushed batch — processed={processed}, failed={failed}")
 
     # Final flush for remaining rows
     if any(batch[k] for k in batch):

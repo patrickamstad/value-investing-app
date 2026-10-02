@@ -20,7 +20,13 @@ import {
 } from "../../../features/analysisSlice";
 import { computeTotLiab } from "./selectorFunctions";
 
-function LiabilitiesTable({ qfsSymbol, tableColumnWidths, scaling }) {
+function LiabilitiesTable({
+  qfsSymbol,
+  tableColumnWidths,
+  scaling,
+  displayDivisor = 1,
+  disabled = false,
+}) {
   const [openLiab, setOpenLiab] = useState(true);
   const [openCurrentLiab, setOpenCurrentLiab] = useState(false);
   const [openNonCurrentLiab, setOpenNonCurrentLiab] = useState(false);
@@ -110,7 +116,7 @@ function LiabilitiesTable({ qfsSymbol, tableColumnWidths, scaling }) {
             hasCellPadding={true}
             marginLeft=""
             titleType="big"
-            value={(totalLiabilities / scaling).toFixed(0)}
+            value={(totalLiabilities / scaling / displayDivisor).toFixed(0)}
           />
           <AssetValCollapsableHeader
             label="Current Liabilities"
@@ -120,7 +126,7 @@ function LiabilitiesTable({ qfsSymbol, tableColumnWidths, scaling }) {
             openCollapse={openLiab}
             hasCellPadding={openLiab ? true : false}
             marginLeft="10px"
-            value={(totalCurrentLiabs / scaling).toFixed(0)}
+            value={(totalCurrentLiabs / scaling / displayDivisor).toFixed(0)}
           />
           {balanceSheet?.currentLiab?.map((lineItem) => {
             return (
@@ -135,6 +141,8 @@ function LiabilitiesTable({ qfsSymbol, tableColumnWidths, scaling }) {
                 category="currentLiab"
                 metric={lineItem.metric}
                 scaling={scaling}
+                displayDivisor={displayDivisor}
+                disabled={disabled}
               />
             );
           })}
@@ -146,7 +154,7 @@ function LiabilitiesTable({ qfsSymbol, tableColumnWidths, scaling }) {
             openCollapse={openLiab}
             hasCellPadding={openLiab ? true : false}
             marginLeft="10px"
-            value={(totalNonCurrentLiabs / scaling).toFixed(0)}
+            value={(totalNonCurrentLiabs / scaling / displayDivisor).toFixed(0)}
           />
           {balanceSheet?.nonCurrentLiab?.map((lineItem) => {
             return (
@@ -161,6 +169,8 @@ function LiabilitiesTable({ qfsSymbol, tableColumnWidths, scaling }) {
                 category="nonCurrentLiab"
                 metric={lineItem.metric}
                 scaling={scaling}
+                displayDivisor={displayDivisor}
+                disabled={disabled}
               />
             );
           })}

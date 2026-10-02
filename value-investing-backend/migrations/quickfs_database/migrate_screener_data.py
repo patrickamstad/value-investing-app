@@ -421,11 +421,28 @@ def get_updatable_columns(cur, table_name, pk_column="id", exclude_columns=None)
 
     return columns
 
-def map_columns(row, table_name):
+# Share counts live in the same tables as revenue/net_income/etc. but aren't monetary
+# amounts - never FX-convert these even when the rest of the table gets converted.
+NON_MONETARY_COLUMNS = {"shares_basic", "shares_diluted", "shares_eop", "shares_eop_change"}
+
+# Only these source tables hold raw fundamentals in reporting_currency. TradedCompanies
+# is company info (already trading-currency by definition), Valuation is already computed
+# in trading currency upstream (see migrate_valuation_data.py's fx CTE), and KeyRatiosAnnual/
+# KeyRatiosQuarter are frozen legacy QuickFS-era data with no active writer (see the
+# ScreenerData model docstring) - we do not attempt to currency-convert those.
+FUNDAMENTALS_TABLES = {"IncomeAnnual", "BalanceAnnual", "BalanceQuarter", "CashFlowAnnual"}
+
+
+def map_columns(row, table_name, fx_rate=1.0):
+    """fx_rate: units of trading currency per 1 unit of reporting currency for this
+    company (see main() - looked up once per company from quickfs_dj_fxrate)."""
     mapped_row = {}
     mapping = SCREENERDATA_MAPPING[table_name]
+    apply_fx = fx_rate != 1.0 and table_name in FUNDAMENTALS_TABLES
     for col, value in row.items():
         if col in mapping:
+            if apply_fx and col not in NON_MONETARY_COLUMNS and isinstance(value, (int, float)):
+                value = value * fx_rate
             mapped_row.update({mapping[col] : value})
         # else:
         #     print(f"Warning: No mapping for column '{col}', table: {table_name}")
@@ -466,16 +483,41 @@ def main():
     print("Fetching latest key ratios (annual)...")
     key_ratios_annual = fetch_latest_records(cur, "quickfs_dj_keyratiosannual", "period_end_date")
 
+    print("Fetching FX rates...")
+    cur.execute("SELECT from_currency, to_currency, rate FROM quickfs_dj_fxrate;")
+    fx_rates = {(r['from_currency'], r['to_currency']): r['rate'] for r in cur.fetchall()}
+
     screener_data_list = []
 
     print("Building denormalized screener data...")
     for comp in companies:
         qfs_symbol = comp['qfs_symbol']
+        trading_currency = comp.get('currency')
 
-        # Skip if quarterly key ratios are missing or too old. So if most recent filling is older than 8 months, we skip the company
-        kr_q = key_ratios_quarter.get(qfs_symbol)
-        if not kr_q or kr_q['period_end_date'] < CUTOFF_DATE:
+        # Skip if the most recent quarterly filing is older than 8 months. Originally
+        # gated on key_ratios_quarter (the last table populated by the old QuickFS
+        # pipeline, so its freshness was a proxy for "the whole pipeline succeeded for
+        # this company"), but KeyRatiosAnnual/KeyRatiosQuarter have had no writer since
+        # the move to EODHD and are permanently empty now - gate on balance_sheet_quarter
+        # instead, which the live EODHD pipeline actually populates every run.
+        bs_q = balance_sheet_quarter.get(qfs_symbol)
+        if not bs_q or bs_q['period_end_date'] < CUTOFF_DATE:
             continue
+
+        # Determine the FX factor to convert this company's fundamentals (filed in
+        # reporting_currency) into its trading currency (= last_close_price's currency).
+        # Defaults to 1.0 - the common case - when they already match, reporting_currency
+        # isn't populated yet, or no FxRate row exists for the pair (logged below so a
+        # missing rate is visible rather than silently wrong).
+        fx_rate = 1.0
+        income_stmt = income_statements.get(qfs_symbol)
+        reporting_currency = income_stmt.get('reporting_currency') if income_stmt else None
+        if reporting_currency and trading_currency and reporting_currency != trading_currency:
+            pair = (reporting_currency, trading_currency)
+            if pair in fx_rates:
+                fx_rate = fx_rates[pair]
+            else:
+                print(f"[WARN] {qfs_symbol}: no FxRate for {reporting_currency}->{trading_currency}, using 1.0")
 
         # Merge all available data into one row
         row = {
@@ -484,7 +526,8 @@ def main():
             'exchange': comp.get('exchange'),
             'name': comp.get('name'),
             'industry': comp.get('industry'),
-            'last_close_price' : comp.get('last_close_price')
+            'last_close_price' : comp.get('last_close_price'),
+            'currency': trading_currency,
         }
 
         # Merge data from other tables if available
@@ -498,9 +541,9 @@ def main():
             """
 
             #remove id and rn key
-       
+
             if data:
-                data = map_columns(data, table_name=source[1])
+                data = map_columns(data, table_name=source[1], fx_rate=fx_rate)
                 row.update(data)
 
         screener_data_list.append(row)

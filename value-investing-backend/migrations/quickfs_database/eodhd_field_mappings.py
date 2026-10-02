@@ -149,9 +149,14 @@ def transform_traded_company(general: dict, exchange_code: str) -> dict:
     exchange   = exchange_code  e.g. "US"  (the EODHD exchange code, not General.Exchange
                                 which returns the operating mic e.g. "NASDAQ")
     """
-    primary_ticker = general.get("PrimaryTicker") or (
-        f"{general['Code']}.{exchange_code}"
-    )
+    # Use PrimaryTicker only when this file IS the primary listing.
+    # Cross-listed tickers (e.g. 19YA.STU) share PrimaryTicker with the main
+    # listing (YRD.US). Using it unconditionally lets a secondary listing claim
+    # the primary qfs_symbol first, after which ON CONFLICT DO NOTHING silently
+    # skips the real primary file.
+    pt = general.get("PrimaryTicker") or ""
+    pt_exchange = pt.split(".")[-1] if "." in pt else ""
+    primary_ticker = pt if pt_exchange == exchange_code else f"{general['Code']}.{exchange_code}"
     return {
         "qfs_symbol":   primary_ticker,
         "ticker":       general.get("Code"),
@@ -241,6 +246,7 @@ def transform_income_statement(raw: dict, qfs_symbol: str) -> dict:
     return {
         "qfs_symbol_id":   qfs_symbol,
         "period_end_date": raw["date"],
+        "reporting_currency": raw.get("currency_symbol"),
 
         # ── Gross profit section: all three stored raw ─────────────────────────
         # gross_profit = revenue − cogs is NOT guaranteed (EODHD inconsistency);
@@ -410,6 +416,7 @@ def transform_balance_sheet(raw: dict, qfs_symbol: str) -> dict:
     return {
         "qfs_symbol_id":                        qfs_symbol,
         "period_end_date":                      raw["date"],
+        "reporting_currency":                   raw.get("currency_symbol"),
 
         # ── Current assets ─────────────────────────────────────────────────────
         # other_current_assets is a residual; all others are raw components.
@@ -551,6 +558,7 @@ def transform_cash_flow(raw: dict, qfs_symbol: str) -> dict:
     return {
         "qfs_symbol_id":                    qfs_symbol,
         "period_end_date":                  raw["date"],
+        "reporting_currency":               raw.get("currency_symbol"),
 
         # CFO — cfo_other_noncash_items is a residual; all others are raw.
         # cfo_receivables / cfo_inventory / cfo_other_working_capital are

@@ -19,9 +19,25 @@ def compute_epv(conn, qfs_symbol, nr_years_avg_rev=4, nr_years_avg_op_margin=4, 
             %s::float AS tax_rate,
             %s::float AS wacc
     ),
+    fx AS (
+        -- Units of trading currency per 1 unit of reporting currency. Defaults to 1.0
+        -- when the company reports in its trading currency (no FxRate row exists for
+        -- a same-currency pair - see migrate_fx_rates.py) or reporting_currency is not
+        -- yet populated for this company.
+        SELECT COALESCE(
+            (SELECT fr.rate
+             FROM quickfs_dj_incomestatementannual isa
+             JOIN quickfs_dj_tradedcompanies tc ON tc.qfs_symbol = isa.qfs_symbol_id
+             JOIN quickfs_dj_fxrate fr ON fr.from_currency = isa.reporting_currency AND fr.to_currency = tc.currency
+             WHERE isa.qfs_symbol_id = (SELECT qfs_symbol FROM params)
+             ORDER BY isa.period_end_date DESC
+             LIMIT 1),
+            1.0
+        ) AS rate
+    ),
     avg_vals AS (
         SELECT
-            (SELECT AVG(revenue)
+            (SELECT AVG(revenue) * (SELECT rate FROM fx)
              FROM (
                  SELECT revenue
                  FROM quickfs_dj_incomestatementannual, params
@@ -44,8 +60,8 @@ def compute_epv(conn, qfs_symbol, nr_years_avg_rev=4, nr_years_avg_op_margin=4, 
     ),
     cash_debt AS (
         SELECT
-            (cash_and_equiv + st_investments) AS cash,
-            (st_debt + lt_debt) AS debt
+            (cash_and_equiv + st_investments) * (SELECT rate FROM fx) AS cash,
+            (st_debt + lt_debt) * (SELECT rate FROM fx) AS debt
         FROM quickfs_dj_balancesheetquarter, params
         WHERE qfs_symbol_id = params.qfs_symbol
           AND (qfs_symbol_id, period_end_date) IN (
@@ -95,6 +111,18 @@ def compute_epv_ttm(conn, qfs_symbol, wacc=0.1, tax_rate=0.3):
             %s::float AS tax_rate,
             %s::float AS wacc
     ),
+    fx AS (
+        SELECT COALESCE(
+            (SELECT fr.rate
+             FROM quickfs_dj_incomestatementquarter isq
+             JOIN quickfs_dj_tradedcompanies tc ON tc.qfs_symbol = isq.qfs_symbol_id
+             JOIN quickfs_dj_fxrate fr ON fr.from_currency = isq.reporting_currency AND fr.to_currency = tc.currency
+             WHERE isq.qfs_symbol_id = (SELECT qfs_symbol FROM params)
+             ORDER BY isq.period_end_date DESC
+             LIMIT 1),
+            1.0
+        ) AS rate
+    ),
     last_four_quarters AS (
         SELECT revenue, operating_income
         FROM quickfs_dj_incomestatementquarter, params
@@ -103,15 +131,15 @@ def compute_epv_ttm(conn, qfs_symbol, wacc=0.1, tax_rate=0.3):
         LIMIT 4
     ),
     op_margin_data AS (
-        SELECT 
+        SELECT
             COALESCE(SUM(operating_income) / NULLIF(SUM(revenue), 0), 0) AS avg_op_margin,
-            COALESCE(SUM(revenue), 0) AS revenue_ttm
+            COALESCE(SUM(revenue), 0) * (SELECT rate FROM fx) AS revenue_ttm
         FROM last_four_quarters
     ),
     cash_debt AS (
-        SELECT 
-            COALESCE(cash_and_equiv + st_investments, 0) AS cash_and_equiv,
-            COALESCE(st_debt + lt_debt, 0) AS debt
+        SELECT
+            COALESCE(cash_and_equiv + st_investments, 0) * (SELECT rate FROM fx) AS cash_and_equiv,
+            COALESCE(st_debt + lt_debt, 0) * (SELECT rate FROM fx) AS debt
         FROM quickfs_dj_balancesheetquarter, params
         WHERE qfs_symbol_id = params.qfs_symbol
           AND (qfs_symbol_id, period_end_date) IN (
@@ -168,9 +196,21 @@ def equity_val_penman(conn, qfs_symbol, nr_years_avg_rev=3, nr_years_avg_op_marg
             %s::float AS tax_rate,
             %s::float AS wacc
     ),
+    fx AS (
+        SELECT COALESCE(
+            (SELECT fr.rate
+             FROM quickfs_dj_balancesheetquarter bsq
+             JOIN quickfs_dj_tradedcompanies tc ON tc.qfs_symbol = bsq.qfs_symbol_id
+             JOIN quickfs_dj_fxrate fr ON fr.from_currency = bsq.reporting_currency AND fr.to_currency = tc.currency
+             WHERE bsq.qfs_symbol_id = (SELECT qfs_symbol FROM params)
+             ORDER BY bsq.period_end_date DESC
+             LIMIT 1),
+            1.0
+        ) AS rate
+    ),
     avg_vals AS (
         SELECT
-            (SELECT AVG(revenue)
+            (SELECT AVG(revenue) * (SELECT rate FROM fx)
              FROM (
                  SELECT revenue
                  FROM quickfs_dj_incomestatementannual, params
@@ -188,20 +228,20 @@ def equity_val_penman(conn, qfs_symbol, nr_years_avg_rev=3, nr_years_avg_op_marg
              ) t) AS avg_op_margin
     ),
     calc_vals AS (
-        SELECT 
+        SELECT
             (avg_revenue * avg_op_margin) AS sustainable_ebit
         FROM avg_vals
     ),
     noa_b0 AS (
         WITH ranked AS (
-            SELECT net_operating_assets, total_equity, 
+            SELECT net_operating_assets, total_equity,
                    ROW_NUMBER() OVER (ORDER BY period_end_date DESC) AS rn
             FROM quickfs_dj_balancesheetquarter, params
             WHERE qfs_symbol_id = params.qfs_symbol
         )
         SELECT
-            AVG(CASE WHEN rn IN (4,8) THEN net_operating_assets END) AS avg_noa,
-            MAX(CASE WHEN rn = 1 THEN total_equity END) AS b0
+            AVG(CASE WHEN rn IN (4,8) THEN net_operating_assets END) * (SELECT rate FROM fx) AS avg_noa,
+            MAX(CASE WHEN rn = 1 THEN total_equity END) * (SELECT rate FROM fx) AS b0
         FROM ranked
     ),
     shares AS (
@@ -288,9 +328,23 @@ def equity_val_penman_ttm(conn, qfs_symbol, nr_years_avg_rev=3, nr_years_avg_op_
             %s::float AS tax_rate,
             %s::float AS wacc
     ),
+    fx AS (
+        SELECT COALESCE(
+            (SELECT fr.rate
+             FROM quickfs_dj_balancesheetquarter bsq
+             JOIN quickfs_dj_tradedcompanies tc ON tc.qfs_symbol = bsq.qfs_symbol_id
+             JOIN quickfs_dj_fxrate fr ON fr.from_currency = bsq.reporting_currency AND fr.to_currency = tc.currency
+             WHERE bsq.qfs_symbol_id = (SELECT qfs_symbol FROM params)
+             ORDER BY bsq.period_end_date DESC
+             LIMIT 1),
+            1.0
+        ) AS rate
+    ),
     calc_vals AS (
-        SELECT 
-            SUM(operating_income) AS sustainable_ebit
+        -- SUM(operating_income) is a raw absolute amount (unlike the annual version's
+        -- avg_revenue * avg_op_margin), so it needs direct conversion here.
+        SELECT
+            SUM(operating_income) * (SELECT rate FROM fx) AS sustainable_ebit
         FROM (
             SELECT operating_income
             FROM quickfs_dj_incomestatementquarter, params
@@ -301,14 +355,14 @@ def equity_val_penman_ttm(conn, qfs_symbol, nr_years_avg_rev=3, nr_years_avg_op_
     ),
     noa_b0 AS (
         WITH ranked AS (
-            SELECT net_operating_assets, total_equity, 
+            SELECT net_operating_assets, total_equity,
                    ROW_NUMBER() OVER (ORDER BY period_end_date DESC) AS rn
             FROM quickfs_dj_balancesheetquarter, params
             WHERE qfs_symbol_id = params.qfs_symbol
         )
         SELECT
-            AVG(CASE WHEN rn IN (4,8) THEN net_operating_assets END) AS avg_noa,
-            MAX(CASE WHEN rn = 1 THEN total_equity END) AS b0
+            AVG(CASE WHEN rn IN (4,8) THEN net_operating_assets END) * (SELECT rate FROM fx) AS avg_noa,
+            MAX(CASE WHEN rn = 1 THEN total_equity END) * (SELECT rate FROM fx) AS b0
         FROM ranked
     ),
     shares AS (
