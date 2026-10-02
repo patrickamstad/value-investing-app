@@ -1,0 +1,33 @@
+
+NEXT STEPS:
+
+-- short term
+1. Make sure that financial data is correctly inserted from EODHD data --> CHECK NEXT
+	1.1 How to consolidate insurance & bank companies? --> still an open point
+2. Make sure that close prices are correctly inserted from EODHD --> NEXT
+2.1 Design delta migration that makes use of the bulk download --> TEST
+
+
+3.0 Make more research about how these agentic systems are actually built. I think there current 
+Approach is not the one to use. There exist a lot of dedicated libraries for it. I think I also need to think about: How do I measure success? I think this is a tricky one, because in the end we need to almost manually check the reports.
+
+Anyway I think for now the correct approach is just to deepen my knowledge about agentic AI
+
+
+AGENTIC
+-------------
+3.1 Design your first analyst report agent from start to finish (probably valuation agent based on penman book)
+4. Test if pdf is correctly created and all the output is correctly stored in S3
+
+-- longer term
+1. build out all of the different agents
+
+
+1. New tab: Analyst report
+2. Dropzone to upload files --> DONE
+ 2.1 Uploads table with FK user and company --> DONE
+3.0 Processing uploaded files (restrict to pdf in the beginning)
+ 3.1 Celery backend pipeline with mineru + structured output --> DONE
+ 3.11 Create table to store structured output 
+ 3.2 Define structured output + report sections 
+ 3.3 Prompt + injection of information

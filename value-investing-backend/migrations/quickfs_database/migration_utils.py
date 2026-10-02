@@ -1,10 +1,45 @@
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
+import os
 import pandas as pd
-from sqlalchemy import create_engine
 import numpy as np
-import pandas as pd
+import psycopg2
+import requests
 from io import StringIO
+
+EODHD_BASE_URL = "https://eodhd.com/api"
+
+# Uniqueness constraints used for ON CONFLICT DO NOTHING across all pipeline scripts.
+CONFLICT_COLUMNS = {
+    "companies":      ["qfs_symbol"],
+    "income_annual":  ["qfs_symbol_id", "period_end_date"],
+    "income_quarter": ["qfs_symbol_id", "period_end_date"],
+    "balance_annual": ["qfs_symbol_id", "period_end_date"],
+    "balance_quarter":["qfs_symbol_id", "period_end_date"],
+    "cf_annual":      ["qfs_symbol_id", "period_end_date"],
+    "cf_quarter":     ["qfs_symbol_id", "period_end_date"],
+}
+
+
+def get_db_connection():
+    return psycopg2.connect(
+        host=os.environ["DB_HOST"],
+        database=os.environ["POSTGRES_DB"],
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+        port=os.environ["DB_PORT"],
+    )
+
+
+def get_exchanges(api_token: str) -> list[dict]:
+    """Fetch all exchanges EODHD supports."""
+    resp = requests.get(
+        f"{EODHD_BASE_URL}/exchanges-list/",
+        params={"api_token": api_token, "fmt": "json"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
 
 #define fields for different financial statements
 traded_companies_fields = ["symbol", "qfs_symbol", "exchange", "name", "company_type", "currency", "industry"] #these correspond to column names in .csv files from quick fs
@@ -15,17 +50,6 @@ income_statement_fields = ["qfs_symbol", "period_end_date", "revenue", "cogs", "
 balance_sheet_fields = ["qfs_symbol", "period_end_date", "cash_and_equiv", "st_investments", "receivables", "inventories", "other_current_assets", "total_current_assets", "equity_and_other_investments", "ppe_gross", "accumulated_depreciation", "ppe_net", "intangible_assets", "goodwill", "other_lt_assets", "total_assets", "accounts_payable", "tax_payable", "current_accrued_liabilities", "st_debt", "current_deferred_revenue", "current_deferred_tax_liability", "current_capital_leases", "other_current_liabilities", "total_current_liabilities", "lt_debt", "noncurrent_capital_leases", "pension_liabilities", "noncurrent_deferred_revenue", "other_lt_liabilities", "total_liabilities", "common_stock", "preferred_stock", "retained_earnings", "aoci", "apic", "treasury_stock", "other_equity", "minority_interest_liability", "total_equity", "total_liabilities_and_equity", "total_investments", "deferred_policy_acquisition_cost", "unearned_premiums", "future_policy_benefits", "loans_gross", "allowance_for_loan_losses", "unearned_income", "loans_net", "deposits_liability"]
 cf_statement_fields = ["qfs_symbol", "period_end_date", "cfo_net_income", "cfo_da", "cfo_receivables", "cfo_inventory", "cfo_prepaid_expenses", "cfo_other_working_capital", "cfo_change_in_working_capital", "cfo_deferred_tax", "cfo_stock_comp", "cfo_other_noncash_items", "cf_cfo", "cfi_ppe_purchases", "cfi_ppe_sales", "cfi_ppe_net", "cfi_acquisitions", "cfi_divestitures", "cfi_acquisitions_net", "cfi_investment_purchases", "cfi_investment_sales", "cfi_investment_net", "cfi_intangibles_net", "cfi_other", "cf_cfi", "cff_common_stock_issued", "cff_common_stock_repurchased", "cff_common_stock_net", "cff_pfd_issued", "cff_pfd_repurchased", "cff_pfd_net", "cff_debt_issued", "cff_debt_repaid", "cff_debt_net", "cff_dividend_paid", "cff_other", "cf_cff", "cf_forex", "cf_net_change_in_cash"]
 key_ratios_fields = ["qfs_symbol", "period_end_date", "market_cap", "period_end_price", "enterprise_value", "book_value", "tangible_book_value", "price_to_earnings", "price_to_book", "price_to_sales", "price_to_tangible_book", "price_to_fcf", "price_to_pretax_income", "enterprise_value_to_earnings", "enterprise_value_to_book", "enterprise_value_to_tangible_book", "enterprise_value_to_sales", "enterprise_value_to_fcf", "enterprise_value_to_pretax_income", "ebitda", "capex", "fcf", "earning_assets", "policy_revenue", "underwriting_profit", "dividends", "payout_ratio", "income_tax_rate", "net_debt", "gross_margin", "ebitda_margin", "operating_margin", "pretax_margin", "net_income_margin", "fcf_margin", "net_interest_margin", "underwriting_margin", "roe", "roa", "roic", "roic_legacy", "roce", "rotce", "roi", "debt_to_equity", "debt_to_assets", "equity_to_assets", "assets_to_equity", "current_ratio", "earning_assets_to_equity", "loans_to_deposits", "loan_loss_reserve_to_loans", "revenue_per_share", "ebitda_per_share", "operating_income_per_share", "pretax_income_per_share", "fcf_per_share", "book_value_per_share", "tangible_book_per_share", "premiums_per_share", "revenue_growth", "gross_profit_growth", "ebitda_growth", "operating_income_growth", "pretax_income_growth", "net_income_growth", "eps_diluted_growth", "shares_diluted_growth", "shares_eop_growth", "cash_and_equiv_growth", "ppe_growth", "total_assets_growth", "total_equity_growth", "cfo_growth", "capex_growth", "fcf_growth", "revenue_cagr_10", "eps_diluted_cagr_10", "total_assets_cagr_10", "total_equity_cagr_10", "cf_cfo_cagr_10", "fcf_cagr_10"]
-
-#visit pandas documentation for these two parameters: https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.to_sql.html
-chunk_size = 10000
-method = 'multi'
-
-#define database connection
-user="postgres"
-password="v,1846PSVv,1846PSV"
-host="localhost"
-port=5432
-database = "value-investing-dev"
 
 
 def bulk_insert(cursor, df, table_name):
@@ -38,13 +62,6 @@ def bulk_insert(cursor, df, table_name):
     copy_sql = f"""COPY {table_name} ({columns}) FROM STDIN WITH CSV"""
     
     cursor.copy_expert(copy_sql, buffer)
-
-def get_connection():
-    return create_engine(
-        url="postgresql://{0}:{1}@{2}:{3}/{4}".format(
-            user, password, host, port, database
-        )
-    )
 
 def transform_date_to_string(date):
     return date.strftime('%Y-%m-%d')

@@ -25,6 +25,7 @@ urlpatterns = [
     #apis for analysis page
     path("analysis/<str:qfs_symbol>/", views.PenmanValuationAPIView.as_view()),
     path("valuation-model/", views.ValuationModelsAPIView.as_view()),
+    path("correct-currency/", views.CorrectCurrencyAPIView.as_view()),
 
 
 ]

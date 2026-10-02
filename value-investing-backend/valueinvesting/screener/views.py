@@ -1,11 +1,11 @@
 from django.shortcuts import render
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from quickfs_dj.models import BalanceSheetAnnual, BalanceSheetQuarter, IncomeStatementAnnual, IncomeStatementQuarter, TradedCompanies, CashFlowStatementAnnual, KeyRatiosAnnual, TradedCompanies, KeyRatiosQuarter, LatestIncomeStatementAnnual, LatestBalanceSheetQuarter, LatestKeyRatiosAnnual, LatestKeyRatiosQuarter, LatestCashFlowStatementAnnual, Valuation, ScreenerData
+from quickfs_dj.models import BalanceSheetAnnual, BalanceSheetQuarter, IncomeStatementAnnual, IncomeStatementQuarter, TradedCompanies, CashFlowStatementAnnual, CashFlowStatementQuarter, KeyRatiosAnnual, TradedCompanies, KeyRatiosQuarter, LatestIncomeStatementAnnual, LatestBalanceSheetQuarter, LatestKeyRatiosAnnual, LatestKeyRatiosQuarter, LatestCashFlowStatementAnnual, Valuation, ScreenerData, FxRate
 from screener.models import CustomMetrics, FilterViews, ValuationModel
 from .serializers import StockScreenerFiltersSerializer, CustomMetricsSerializer, FilterViewsSerializer,CharFieldFilterOptions, ValuationModelSerizalizer
 from django.core.cache import cache
-from django.db import connection
+from django.db import connection, transaction
 import yfinance as yf
 from quickfs import QuickFS
 from .helpers import transform_expression, BALANCE_SHEET_GROUPS
@@ -1273,17 +1273,21 @@ def get_rnoa_cases(qfs_symbol, n=6, tax_rate = 0.3):
 
     print('qfs symbol: ', qfs_symbol)
 
+    income_by_date = {inc.period_end_date: inc for inc in incomes}
+
     # step 3: compute rnoa. Remember we have ordered entries in descending order, so at position 0 we have the newest value
     rnoa_values = []
     for i in range(0, len(balances)-1):
-        income_t = incomes[i]
+        income_t = income_by_date.get(balances[i].period_end_date)
+        if income_t is None:
+            continue
         balance_t_1 = balances[i+1]
 
         print('income.operating_income: ', income_t.operating_income)
         print('income.net_operating_assets: ', balance_t_1.net_operating_assets)
 
         # avoid none or zero division
-        if balance_t_1.net_operating_assets is None or balance_t_1.net_operating_assets == 0:
+        if balance_t_1.net_operating_assets is None or balance_t_1.net_operating_assets == 0 or income_t.operating_income is None:
             continue
 
         rnoa = income_t.operating_income*(1-tax_rate)/balance_t_1.net_operating_assets
@@ -1317,14 +1321,20 @@ def get_rnoa_ts(qfs_symbol, n = 10, tax_rate = 0.3, scaleFactor=100):
     incomes = sorted(incomes, key=lambda i: i.period_end_date)  # oldest -> newest
     balances = sorted(balances, key=lambda b: b.period_end_date)  # oldest -> newest
 
+    # Build a date-keyed lookup so we match by period, not by position.
+    # Balance sheet and income statement may have different row counts.
+    income_by_date = {inc.period_end_date: inc for inc in incomes}
+
     # Step 3: compute RNOA using NOA from previous period
     rnoa_series = []
     for i in range(1, len(balances)):
-        income_t = incomes[i]
+        income_t = income_by_date.get(balances[i].period_end_date)
+        if income_t is None:
+            continue
         noa_prev = balances[i-1].net_operating_assets
 
-        if noa_prev == 0:
-            continue  # avoid division by zero
+        if noa_prev is None or noa_prev == 0 or income_t.operating_income is None:
+            continue
 
         rnoa = income_t.operating_income * (1 - tax_rate) / noa_prev
         year = income_t.period_end_date.year
@@ -1357,16 +1367,20 @@ def get_ato_ts(qfs_symbol, n = 10, tax_rate = 0.3, scaleFactor=1):
     incomes = sorted(incomes, key=lambda i: i.period_end_date)  # oldest -> newest
     balances = sorted(balances, key=lambda b: b.period_end_date)  # oldest -> newest
 
-    # Step 3: compute RNOA using NOA from previous period
+    income_by_date = {inc.period_end_date: inc for inc in incomes}
+
+    # Step 3: compute ATO using NOA from previous period
     ato_series = []
     for i in range(1, len(balances)):
-        income_t = incomes[i]
+        income_t = income_by_date.get(balances[i].period_end_date)
+        if income_t is None:
+            continue
         noa_prev = balances[i-1].net_operating_assets
 
-        if noa_prev == 0:
-            continue  # avoid division by zero
+        if noa_prev is None or noa_prev == 0 or income_t.revenue is None:
+            continue
 
-        ato = income_t.revenue  / noa_prev
+        ato = income_t.revenue / noa_prev
         year = income_t.period_end_date.year
         ato_series.append({'year': str(year), 'value': ato*scaleFactor})
 
@@ -1514,17 +1528,23 @@ def get_rnoa(qfs_symbol, years: int = 5, include_ttm: bool = True, precision: in
     )[:years+1]
 
     rnoa = defaultdict()
-    incomes = list(reversed(incomes))
+    incomes = list(reversed(incomes))   # now ascending (oldest first)
     balances = list(reversed(balances))
 
-    # step 3: compute rnoa. Remember we have ordered entries in descending order, so at position 0 we have the newest value
-    for i in range(1, len(incomes)):
-        year_t = incomes[i].year
-        op_income_t = incomes[i].operating_income
-        noa_t_minus_1 = balances[i-1].net_operating_assets
+    balance_by_date = {b.period_end_date: b for b in balances}
+    balance_dates = sorted(balance_by_date.keys())
+
+    # step 3: compute rnoa. Iterate over consecutive balance periods; look up income by date.
+    for i in range(1, len(balance_dates)):
+        income_t = next((inc for inc in incomes if inc.period_end_date == balance_dates[i]), None)
+        if income_t is None:
+            continue
+        year_t = income_t.year
+        op_income_t = income_t.operating_income
+        noa_t_minus_1 = balance_by_date[balance_dates[i-1]].net_operating_assets
 
         # avoid invalid denominator
-        if noa_t_minus_1 in (None, 0):
+        if noa_t_minus_1 in (None, 0) or op_income_t is None:
             rnoa[year_t] = 0
             continue
 
@@ -1592,7 +1612,7 @@ def get_asset_turnover(qfs_symbol, years: int = 5, include_ttm: bool = True, pre
         noa_t_minus_1 = balances[i-1].net_operating_assets
 
         # avoid invalid denominator
-        if noa_t_minus_1 in (None, 0):
+        if noa_t_minus_1 in (None, 0) or revenue_t is None:
             ato[year_t] = 0
             continue
 
@@ -1728,7 +1748,7 @@ def get_effective_tax_rates(qfs_symbol, years: int=5, include_ttm: bool = True, 
 
     #compute effective tax rate
     for i, stmt in enumerate(reversed(ins)):
-        effective_tr[stmt.get('year', 0)] = round(stmt['income_tax']/stmt['pretax_income'],precision) if stmt['pretax_income'] not in (None, 0) else 0
+        effective_tr[stmt.get('year', 0)] = round(stmt['income_tax']/stmt['pretax_income'],precision) if stmt['pretax_income'] not in (None, 0) and stmt['income_tax'] is not None else 0
 
     #compute ttm
     #include ttm values
@@ -1842,7 +1862,7 @@ def get_book_value_ts(qfs_symbol, n=10):
 
     return formatted_data
 
-def get_debt_ts(qfs_symbol, n=10):
+def get_debt_ts(qfs_symbol, n=10, fx_rate: float = 1.0):
     last_records = (
         BalanceSheetAnnual.objects
         .filter(qfs_symbol_id=qfs_symbol)
@@ -1853,7 +1873,7 @@ def get_debt_ts(qfs_symbol, n=10):
 
     # Convert to desired format and sort by year ascending
     formatted_data = [
-        {'year': str(record['year']), 'value': record['total_debt']}
+        {'year': str(record['year']), 'value': record['total_debt'] * fx_rate if record['total_debt'] is not None else None}
         for record in sorted(last_records, key=lambda x: x['year'])
     ]
 
@@ -1893,6 +1913,47 @@ def get_nr_diluted_shares_ts(qfs_symbol, n=10):
 
     return formatted_data
 
+def get_detected_currencies(qfs_symbol: str) -> tuple:
+    """
+    Returns (detected_reporting_currency, detected_trading_currency) - the raw,
+    un-overridden values straight from the DB. reporting_currency comes from this
+    company's latest fundamentals row; trading_currency from TradedCompanies.currency.
+
+    Kept separate from any session override (see PenmanValuationAPIView/computeAssetVal)
+    so the frontend can always show "detected: X -> overridden: Y" and revert back to
+    the true detected value, even after multiple overrides in the same session.
+    """
+    latest = (
+        IncomeStatementAnnual.objects
+        .filter(qfs_symbol_id=qfs_symbol)
+        .exclude(reporting_currency__isnull=True)
+        .order_by('-period_end_date')
+        .first()
+    )
+    reporting_currency = latest.reporting_currency if latest else None
+    trading_currency = TradedCompanies.objects.filter(qfs_symbol=qfs_symbol).first().currency
+    return reporting_currency, trading_currency
+
+
+def get_fx_rate(reporting_currency: str, trading_currency: str) -> float:
+    """
+    Units of trading_currency per 1 unit of reporting_currency. Both currencies must
+    already be resolved (auto-detected or overridden - that's the caller's job via
+    get_detected_currencies + any override). Upstream provider data can be wrong or
+    inconsistent across periods (seen in practice: EODHD mistagging a company's most
+    recent filing's currency), which is exactly what an override corrects for.
+
+    Defaults to 1.0 when reporting/trading currency already match, either is unknown,
+    or no FxRate row exists for the pair - mirrors the same fallback used in
+    migrations/quickfs_database/migrate_valuation_data.py's fx CTE.
+    """
+    if not reporting_currency or not trading_currency or reporting_currency == trading_currency:
+        return 1.0
+
+    fx = FxRate.objects.filter(from_currency=reporting_currency, to_currency=trading_currency).first()
+    return fx.rate if fx else 1.0
+
+
 def get_nr_diluted_shares(qfs_symbol):
     # Get the latest record for the given ticker
     latest_record = IncomeStatementQuarter.objects.filter(
@@ -1908,9 +1969,11 @@ def get_nr_diluted_shares(qfs_symbol):
     return nr_shares_dil
 
 
-def get_financials(qfs_symbol: str, modelAnnual, modelQuarter, type: Literal["income", "balance"], years: int = 5, metric_fields: list[str] = ["revenue", "cogs", "gross_profit", "sga", "rnd", "other_opex", "operating_income", "income_tax"], include_ttm: bool = True):
+def get_financials(qfs_symbol: str, modelAnnual, modelQuarter, type: Literal["income", "balance"], years: int = 5, metric_fields: list[str] = ["revenue", "cogs", "gross_profit", "sga", "rnd", "other_opex", "operating_income", "income_tax"], include_ttm: bool = True, fx_rate: float = 1.0):
     """
     type: use to determine how ttm is computed. For income, last four entries of quarterly statements are summed up; for balance most recent entry is taken
+    fx_rate: multiplier applied to every returned value - pass the company's reporting-currency
+    -> trading-currency rate (see get_fx_rate) for monetary fields; leave at 1.0 for share counts.
     """
     
     # Fetch only needed fields + period_end_date
@@ -1966,7 +2029,7 @@ def get_financials(qfs_symbol: str, modelAnnual, modelQuarter, type: Literal["in
     metrics = defaultdict(dict)
     for period_label, stmt in zip(periods, reversed(latest_statements)):
         for field in metric_fields:
-            metrics[field][period_label] = stmt.get(field, 0.0) or 0.0
+            metrics[field][period_label] = (stmt.get(field, 0.0) or 0.0) * fx_rate
 
     return {
         "symbol": qfs_symbol,
@@ -1974,9 +2037,11 @@ def get_financials(qfs_symbol: str, modelAnnual, modelQuarter, type: Literal["in
         "metrics": metrics
     }
 
-def get_financials_ts(qfs_symbol: str, model, metric: str, years: int = 10, scale_factor = 1):
+def get_financials_ts(qfs_symbol: str, model, metric: str, years: int = 10, scale_factor = 1, fx_rate: float = 1.0):
     """
     Function that returns time series for requested metric in the following format: [{'year': 2021, 'value' : 10000}, {'year': 2022, 'value' : 20000}, etc.]
+    fx_rate: multiplier for reporting-currency -> trading-currency conversion (see get_fx_rate);
+    leave at 1.0 for ratios/share counts.
     """
     last_records = (model.objects
                     .filter(qfs_symbol_id = qfs_symbol)
@@ -1984,10 +2049,10 @@ def get_financials_ts(qfs_symbol: str, model, metric: str, years: int = 10, scal
                     .order_by('-period_end_date')[:years]
                     .values('year', metric)
             )
-    
+
     #we will sort data from oldest to newest (2019, 2020, 2021)
     ts = [
-        {'year': str(record['year']), 'value': record[metric]*scale_factor}
+        {'year': str(record['year']), 'value': record[metric] * scale_factor * fx_rate if record[metric] is not None else None}
         for record in sorted(last_records, key=lambda x: x['year'])
     ]
 
@@ -2004,19 +2069,32 @@ class PenmanValuationAPIView(APIView):
         #get unix timestamp to store last fetch time
         last_fetch = int(time.time() * 1000) 
 
-        #get currency of company
-        currency = TradedCompanies.objects.filter(qfs_symbol = qfs_symbol).first().currency
         nr_shares = get_nr_diluted_shares(qfs_symbol=qfs_symbol)
 
+        # fx_rate converts this company's reporting-currency fundamentals into its
+        # trading currency (= currency, matches last_close_price). Applied to every
+        # monetary field below; never to share counts (nr_shares, shares_diluted,
+        # nr_shares_ts) or ratios (margins, RNOA, ATO, effective tax rate), which are
+        # currency-invariant by construction.
+        # reportingCurrency/tradingCurrency query params let the frontend override
+        # auto-detection for this request only - upstream provider data can be wrong
+        # (reporting currency especially; trading currency far more rarely). detected_*
+        # stays the raw DB value regardless, so the frontend can always show
+        # "detected -> overridden" and revert back to it.
+        reporting_currency_detected, currency_detected = get_detected_currencies(qfs_symbol)
+        reporting_currency = request.query_params.get("reportingCurrency") or reporting_currency_detected
+        currency = request.query_params.get("tradingCurrency") or currency_detected
+        fx_rate = get_fx_rate(reporting_currency, currency)
+
         # get different income statement items
-        revenue = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter,type = "income", years=years, metric_fields=["revenue"])
-        cogs = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["cogs"])
-        gp = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["gross_profit"])
-        sga = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["sga"])
-        rnd = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["rnd"])
-        other_opex = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["other_opex"])
-        operating_income = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["operating_income"])
-        income_tax = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["income_tax"])
+        revenue = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter,type = "income", years=years, metric_fields=["revenue"], fx_rate=fx_rate)
+        cogs = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["cogs"], fx_rate=fx_rate)
+        gp = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["gross_profit"], fx_rate=fx_rate)
+        sga = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["sga"], fx_rate=fx_rate)
+        rnd = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["rnd"], fx_rate=fx_rate)
+        other_opex = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["other_opex"], fx_rate=fx_rate)
+        operating_income = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["operating_income"], fx_rate=fx_rate)
+        income_tax = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter, type = "income", years=years, metric_fields=["income_tax"], fx_rate=fx_rate)
         gp_margins = get_gp_margins(qfs_symbol, years)
         op_margins = get_op_margins(qfs_symbol, years)
         rnoa = get_rnoa(qfs_symbol, years)
@@ -2024,35 +2102,35 @@ class PenmanValuationAPIView(APIView):
         effective_tr = get_effective_tax_rates(qfs_symbol, years)
 
         #get operating assets, operating liabilities, net operating assets
-        op_assets = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["operating_assets"])
-        op_liab = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["operating_liabilities"])
-        net_op_assets = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["net_operating_assets"])
-        book_value = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["total_equity"])
+        op_assets = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["operating_assets"], fx_rate=fx_rate)
+        op_liab = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["operating_liabilities"], fx_rate=fx_rate)
+        net_op_assets = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["net_operating_assets"], fx_rate=fx_rate)
+        book_value = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["total_equity"], fx_rate=fx_rate)
 
         #get debt and number of shares
-        st_debt = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["st_debt"])
-        lt_debt = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["lt_debt"])
+        st_debt = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["st_debt"], fx_rate=fx_rate)
+        lt_debt = get_financials(qfs_symbol, modelAnnual=BalanceSheetAnnual, modelQuarter=BalanceSheetQuarter,type = "balance", years=years, metric_fields=["lt_debt"], fx_rate=fx_rate)
         shares_diluted = get_financials(qfs_symbol, modelAnnual=IncomeStatementAnnual, modelQuarter=IncomeStatementQuarter,type = "balance", years=years, metric_fields=["shares_diluted"])
 
         #sum the short-term and long-term debt
         debt = dict(Counter(st_debt['metrics']["st_debt"]) + Counter(lt_debt['metrics']["lt_debt"]))
 
         #extract time series data in format [{'year': 2021, 'value' : 10000}, {'year': 2022, 'value' : 20000}, etc.]
-        revenue_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='revenue')
-        cogs_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='cogs')
-        sga_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='sga')
-        rnd_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='rnd')
-        other_opex_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='other_opex')
+        revenue_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='revenue', fx_rate=fx_rate)
+        cogs_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='cogs', fx_rate=fx_rate)
+        sga_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='sga', fx_rate=fx_rate)
+        rnd_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='rnd', fx_rate=fx_rate)
+        other_opex_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='other_opex', fx_rate=fx_rate)
         op_margin_ts = get_op_margin_ts(qfs_symbol)
         gp_margin_ts = get_gp_margin_ts(qfs_symbol)
-        op_income_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='operating_income')
-        op_assets_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='operating_assets')
-        op_liab_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='operating_liabilities')
-        net_op_assets_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='net_operating_assets')
-        book_value_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='total_equity')
+        op_income_ts = get_financials_ts(qfs_symbol, model=IncomeStatementAnnual, metric='operating_income', fx_rate=fx_rate)
+        op_assets_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='operating_assets', fx_rate=fx_rate)
+        op_liab_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='operating_liabilities', fx_rate=fx_rate)
+        net_op_assets_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='net_operating_assets', fx_rate=fx_rate)
+        book_value_ts = get_financials_ts(qfs_symbol, model=BalanceSheetAnnual, metric='total_equity', fx_rate=fx_rate)
         rnoa_ts = get_rnoa_ts(qfs_symbol)
         ato_ts = get_ato_ts(qfs_symbol)
-        debt_ts = get_debt_ts(qfs_symbol)
+        debt_ts = get_debt_ts(qfs_symbol, fx_rate=fx_rate)
         nr_shares_ts = get_nr_diluted_shares_ts(qfs_symbol)
 
         #extract revenues to give default value for valuation (bear, base, bull)
@@ -2089,6 +2167,10 @@ class PenmanValuationAPIView(APIView):
 
         response = {'qfsSymbol' : qfs_symbol
                     ,'currency' : currency
+                    ,'currencyDetected' : currency_detected
+                    ,'reportingCurrency' : reporting_currency
+                    ,'reportingCurrencyDetected' : reporting_currency_detected
+                    ,'fxRate' : fx_rate
                     ,'nrShares' : nr_shares
                     ,'lastFetch' : last_fetch
                     ,'periods' : revenue['periods']
@@ -2287,6 +2369,67 @@ class PenmanValuationAPIView(APIView):
                     }
 
         return Response(response)
+
+
+class CorrectCurrencyAPIView(APIView):
+    """
+    Persists a user-confirmed correction to a company's reporting_currency and/or
+    trading_currency, so future requests (and the next scheduled
+    migrate_valuation_data.py / migrate_screener_data.py run) pick up the fix
+    automatically instead of relying on get_fx_rate's session-only overrides every
+    time. Accepts either or both fields - only the ones present get updated.
+
+    Deliberately a separate, explicit action from those overrides - the overrides are
+    also used for quick "what if" exploration and must never write to the DB on every
+    keystroke; this endpoint is only called from an explicit "Save to database"
+    action, since it changes what every user sees, not just the one making it.
+    """
+    def post(self, request):
+        qfs_symbol = request.data.get("qfsSymbol")
+        reporting_currency = request.data.get("reportingCurrency")
+        trading_currency = request.data.get("tradingCurrency")
+
+        if not qfs_symbol or (not reporting_currency and not trading_currency):
+            return Response(
+                {"detail": "qfsSymbol and at least one of reportingCurrency/tradingCurrency are required."},
+                status=400,
+            )
+
+        result = {"qfsSymbol": qfs_symbol}
+
+        with transaction.atomic():
+            if reporting_currency:
+                # reporting_currency lives on all six fundamentals tables (not just
+                # IncomeStatementAnnual, which get_detected_currencies reads from)
+                # since migrate_valuation_data.py's SQL reads it from different
+                # tables depending on the function - fixing only one would leave
+                # the pipeline inconsistent.
+                fundamentals_models = [
+                    IncomeStatementAnnual,
+                    IncomeStatementQuarter,
+                    BalanceSheetAnnual,
+                    BalanceSheetQuarter,
+                    CashFlowStatementAnnual,
+                    CashFlowStatementQuarter,
+                ]
+                result["reportingCurrency"] = reporting_currency
+                result["reportingCurrencyRowsUpdated"] = {
+                    model.__name__: model.objects.filter(qfs_symbol_id=qfs_symbol).update(
+                        reporting_currency=reporting_currency
+                    )
+                    for model in fundamentals_models
+                }
+
+            if trading_currency:
+                # trading_currency lives only on TradedCompanies - it's the currency
+                # last_close_price (and everything derived from it) is quoted in.
+                result["tradingCurrency"] = trading_currency
+                result["tradingCurrencyRowsUpdated"] = TradedCompanies.objects.filter(
+                    qfs_symbol=qfs_symbol
+                ).update(currency=trading_currency)
+
+        return Response(result)
+
 
 class EPVFundamentalsAPIView(APIView):
     def post(self, request):
@@ -3051,7 +3194,7 @@ class StockFilterAvailableQuantitiesAPIView(APIView):
         return Response(responseSerialized)
 
 
-def computeAssetVal(qfs_symbol):
+def computeAssetVal(qfs_symbol, reporting_currency_override=None, trading_currency_override=None):
         """
         returns the most recent quarterly balance sheet. Null or zero values are not returned
         """
@@ -3062,6 +3205,16 @@ def computeAssetVal(qfs_symbol):
         except BalanceSheetQuarter.DoesNotExist:
             return Response({"detail": "Not found."}, status=404)
 
+        # every field in BALANCE_SHEET_GROUPS is a monetary balance-sheet line item
+        # (reporting currency) - convert to trading currency (see get_fx_rate) so
+        # Net Liq. Value is comparable to last_close_price on the frontend. detected_*
+        # stays the raw DB value regardless of overrides, for "detected -> overridden"
+        # display and reverting back to it.
+        reporting_currency_detected, currency_detected = get_detected_currencies(qfs_symbol)
+        reporting_currency = reporting_currency_override or reporting_currency_detected
+        trading_currency = trading_currency_override or currency_detected
+        fx_rate = get_fx_rate(reporting_currency, trading_currency)
+
         data = {}
         for group_name, fields in BALANCE_SHEET_GROUPS.items():
             group_metrics = []
@@ -3071,12 +3224,12 @@ def computeAssetVal(qfs_symbol):
                     group_metrics.append({
                         "metric": field["metric"],
                         "label": field["label"],
-                        "value": value,
+                        "value": value * fx_rate,
                         "multiplier" : 1
                     })
             if group_metrics:
                 data[group_name] = group_metrics
-            # handle case where for example no nonCurrentLiabilities are present. We return empty list 
+            # handle case where for example no nonCurrentLiabilities are present. We return empty list
             else:
                 data[group_name] = []
 
@@ -3087,12 +3240,23 @@ def computeAssetVal(qfs_symbol):
             "qfsSymbol": qfs_symbol,
             "periodEndDate": record.period_end_date,
             "nrShares" : nr_shares,
+            "currency" : trading_currency,
+            "currencyDetected" : currency_detected,
+            "reportingCurrency" : reporting_currency,
+            "reportingCurrencyDetected" : reporting_currency_detected,
+            "fxRate" : fx_rate,
             "data": data,
              }
 
 class AssetValFundamentalsAPIView(APIView):
     def post(self, request):
         qfs_symbols = request.data['qfs_symbols']
+        # optional: override auto-detected currencies for this request only (see
+        # get_fx_rate) - applies to every symbol in the batch, which in practice
+        # is just the single ticker the Analysis page is currently showing.
+        reporting_currency_override = request.data.get('reportingCurrency')
+        trading_currency_override = request.data.get('tradingCurrency')
+        has_override = bool(reporting_currency_override or trading_currency_override)
         today = datetime.today()
 
         # Format as dd-mm-yyyy
@@ -3108,35 +3272,51 @@ class AssetValFundamentalsAPIView(APIView):
 
             if asset_val is None:
                 #compute asset value
-                asset_val = computeAssetVal(qfs_symbol=qfs_symbol)
+                asset_val = computeAssetVal(
+                    qfs_symbol=qfs_symbol,
+                    reporting_currency_override=reporting_currency_override,
+                    trading_currency_override=trading_currency_override,
+                )
 
-                #store asset value in cache
-                cache.set(f'{qfs_symbol}_AssetVal_{formatted_date}', asset_val, timeout=CACHE_TTL)
+                # don't cache an override result under the shared (non-override) cache
+                # key - it would then get served to future non-override requests too
+                if not has_override:
+                    cache.set(f'{qfs_symbol}_AssetVal_{formatted_date}', asset_val, timeout=CACHE_TTL)
 
 
             #add asset val to response
             response.append(asset_val)
-        
+
         return Response(response)
 
     def get(self, request, qfs_symbol):
         """
         returns the most recent quarterly balance sheet. Null or zero values are not returned
         """
+        reporting_currency_override = request.query_params.get("reportingCurrency")
+        trading_currency_override = request.query_params.get("tradingCurrency")
+        has_override = bool(reporting_currency_override or trading_currency_override)
         today = datetime.today()
 
         # Format as dd-mm-yyyy
         formatted_date = today.strftime("%d-%m-%Y")
 
-        #check if asset val is cached
-        asset_val = cache.get(f'{qfs_symbol}_AssetVal_{formatted_date}')
+        # skip the cache entirely when overriding - a cached value could be from a
+        # different (or no) override and would silently ignore this request's choice
+        asset_val = None if has_override else cache.get(f'{qfs_symbol}_AssetVal_{formatted_date}')
 
         if asset_val is None:
             #compute asset value
-            asset_val = computeAssetVal(qfs_symbol=qfs_symbol)
+            asset_val = computeAssetVal(
+                qfs_symbol=qfs_symbol,
+                reporting_currency_override=reporting_currency_override,
+                trading_currency_override=trading_currency_override,
+            )
 
-            #store asset value in cache
-            cache.set(f'{qfs_symbol}_AssetVal_{formatted_date}', asset_val, timeout=CACHE_TTL)
+            # don't cache an override result under the shared (non-override) cache key -
+            # it would then get served to future non-override requests too
+            if not has_override:
+                cache.set(f'{qfs_symbol}_AssetVal_{formatted_date}', asset_val, timeout=CACHE_TTL)
 
         return Response(asset_val)
 

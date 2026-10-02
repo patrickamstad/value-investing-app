@@ -9,6 +9,15 @@ ENV PYTHONUNBUFFERED=1
 # create working directory
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libharfbuzz0b \
+    libfontconfig1 \
+    libcairo2 \
+    libgdk-pixbuf-2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # copy requirements file to workid
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -36,9 +45,14 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install build dependencies just in case (optional if psycopg2-binary is used)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libharfbuzz0b \
+    libfontconfig1 \
+    libcairo2 \
+    libgdk-pixbuf-2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

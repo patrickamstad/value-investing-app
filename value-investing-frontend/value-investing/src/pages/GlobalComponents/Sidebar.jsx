@@ -48,7 +48,7 @@ const Sidebar = ({ mobileOpen, handleDrawerToggle, window }) => {
 
   const menuItems = [
     { text: "Screener", path: "/screener" },
-    { text: "Valuation", path: "/valuation" },
+    // { text: "Valuation", path: "/valuation" },
     { text: "Analysis", path: "/analysis" },
     { text: "Watchlists", path: "/watchlist" },
     // { text: "Testing", path: "/testing" },

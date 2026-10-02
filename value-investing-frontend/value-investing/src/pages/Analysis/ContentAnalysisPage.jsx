@@ -10,6 +10,7 @@ import AnalysisTabs from "./Components/AnalysisTabs";
 import CompanyOverview from "./Components/CompanyOverview";
 import ValuationModel from "./Components/ValuationModel";
 import AnalysisHistorySidebar from "./Components/AnalysisHistorySidebar";
+import AnalystReport from "./Components/AnalystReport/AnalystReport";
 
 function ContentAnalysisPage() {
   const analysisState = useSelector((state) => state.analysis);
@@ -46,6 +47,7 @@ function ContentAnalysisPage() {
 
                   {tab === 0 && <CompanyOverview />}
 
+
                   {tab === 1 && (
                     <ValuationModel
                       qfsSymbol={
@@ -55,6 +57,9 @@ function ContentAnalysisPage() {
                       isHistoryOpen={showHistory}
                     />
                   )}
+
+                  {tab === 2 && <AnalystReport />}
+
                 </Box>
 
                 {/* === HISTORY SIDEBAR === */}

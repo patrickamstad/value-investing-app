@@ -60,14 +60,25 @@ function CompanySearchField({ setBackdropLoading }) {
   const { showMessage } = useSnackbar();
 
   const fetchTickerData = useCallback(
-    (qfsSymbol) => {
+    (qfsSymbol, reportingCurrencyOverride, tradingCurrencyOverride) => {
       if (!qfsSymbol) return;
+
+      const currencyOverrideParams = {
+        ...(reportingCurrencyOverride
+          ? { reportingCurrency: reportingCurrencyOverride }
+          : {}),
+        ...(tradingCurrencyOverride
+          ? { tradingCurrency: tradingCurrencyOverride }
+          : {}),
+      };
 
       setBackdropLoading(true);
 
       // --- main analysis data ---
       axiosInstanceAuth
-        .get(`screener/analysis/${qfsSymbol}/`)
+        .get(`screener/analysis/${qfsSymbol}/`, {
+          params: currencyOverrideParams,
+        })
         .then((response) => {
           dispatch(initializeCompanyData(response.data));
           dispatch(initializeValuationData(response?.data?.valuationDefaults));
@@ -82,6 +93,7 @@ function CompanySearchField({ setBackdropLoading }) {
       axiosInstanceAuth
         .post("/screener/asset-val-fundamentals/", {
           qfs_symbols: [qfsSymbol],
+          ...currencyOverrideParams,
         })
         .then((response) => {
           dispatch(initalizeBalanceSheet(response.data[0]?.data));
@@ -115,9 +127,17 @@ function CompanySearchField({ setBackdropLoading }) {
   useEffect(() => {
     const qfsSymbol = analysisState.selectedTickerSymbol?.qfs_symbol;
     if (qfsSymbol) {
-      fetchTickerData(qfsSymbol);
+      fetchTickerData(
+        qfsSymbol,
+        analysisState.reportingCurrencyOverride,
+        analysisState.tradingCurrencyOverride
+      );
     }
-  }, [analysisState.selectedTickerSymbol]);
+  }, [
+    analysisState.selectedTickerSymbol,
+    analysisState.reportingCurrencyOverride,
+    analysisState.tradingCurrencyOverride,
+  ]);
 
   const handleChange = (event, newValue) => {
     dispatch(initializeTickerSymbol(newValue));

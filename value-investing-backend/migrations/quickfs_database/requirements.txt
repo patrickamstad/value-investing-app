@@ -51,7 +51,7 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 pytz==2025.1
 pyzmq==26.3.0
-quickfs==0.1.1
+boto3==1.43.29
 redis==5.2.1
 requests==2.32.3
 scipy==1.15.2

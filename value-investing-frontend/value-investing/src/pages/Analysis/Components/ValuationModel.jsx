@@ -11,7 +11,10 @@ import ToggleButtonsScaling from "./ToggleButtonsScaling";
 import { OutlinedInput } from "@mui/material";
 import ValuationApproachSelect from "./ValuationApproachSelect";
 import Tooltip from "@mui/material/Tooltip";
-import { updateValuationData } from "../../../features/analysisSlice";
+import {
+  updateValuationData,
+  setTableCurrencyMode,
+} from "../../../features/analysisSlice";
 import {
   computeAto,
   computeEquityVal,
@@ -45,6 +48,10 @@ const editableFieldsCapitalStructure = [
   "operatingLiabilities",
   "bookValue",
 ];
+// Fields tagged type "absolute" in the backend response that are NOT monetary
+// amounts (a share count and a turnover multiple, respectively) - must never be
+// rescaled by the fundamentals table's currency toggle.
+const NON_MONETARY_ABSOLUTE_FIELDS = ["nrShares", "ato"];
 
 function ValuationModel({ qfsSymbol, onToggleHistory, isHistoryOpen }) {
   const companyData = useSelector((state) => state.analysis?.companyData);
@@ -64,6 +71,13 @@ function ValuationModel({ qfsSymbol, onToggleHistory, isHistoryOpen }) {
 
   const currencyCode = useSelector(
     (state) => state.analysis?.companyData?.currency
+  );
+  const tableCurrencyMode = useSelector(
+    (state) => state.analysis?.tableCurrencyMode
+  );
+  const fxRate = useSelector((state) => state.analysis?.companyData?.fxRate);
+  const reportingCurrencyCode = useSelector(
+    (state) => state.analysis?.companyData?.reportingCurrency
   );
 
   const [scaling, setScaling] = useState("1000000");
@@ -100,6 +114,21 @@ function ValuationModel({ qfsSymbol, onToggleHistory, isHistoryOpen }) {
         scaleFactor: scaleFactor,
       })
     );
+  };
+
+  // Historical/TTM table cells only (never the editable BEAR/BASE/BULL columns,
+  // which always stay in trading currency). Mirrors the original values[period]
+  // truthy-check fallback to "-" exactly, just rescaling monetary values on top
+  // when the user has switched the table to reporting-currency display.
+  const getTableCellValue = (metricName, values, period) => {
+    const rawValue = values?.values?.[period];
+    if (!rawValue) return "-";
+    const isMonetary =
+      values?.type === "absolute" &&
+      !NON_MONETARY_ABSOLUTE_FIELDS.includes(metricName);
+    return isMonetary && tableCurrencyMode === "reporting" && fxRate
+      ? rawValue / fxRate
+      : rawValue;
   };
 
   let opIncome = [0, 0, 0];
@@ -168,7 +197,11 @@ function ValuationModel({ qfsSymbol, onToggleHistory, isHistoryOpen }) {
         title="Valuation Model"
         currencyCode={currencyCode}
         qfsSymbol={qfsSymbol}
-        lastClosePrice={data?.lastClosePrice}>
+        lastClosePrice={data?.lastClosePrice}
+        tableCurrencyMode={tableCurrencyMode}
+        onTableCurrencyModeChange={(value) => dispatch(setTableCurrencyMode(value))}
+        tradingCurrencyCode={currencyCode}
+        reportingCurrencyCode={reportingCurrencyCode}>
         <TableContainer
           component={Paper}
           sx={{
@@ -224,9 +257,7 @@ function ValuationModel({ qfsSymbol, onToggleHistory, isHistoryOpen }) {
                       </div>
                     </TableCell>
                     {companyData?.periods.map((period) => {
-                      let cellValue = values?.values[period]
-                        ? values?.values[period]
-                        : "-";
+                      let cellValue = getTableCellValue(metricName, values, period);
 
                       //based on the value type we return different cell in order to format differently
                       if (values?.type === "perc") {
@@ -348,9 +379,7 @@ function ValuationModel({ qfsSymbol, onToggleHistory, isHistoryOpen }) {
                         </div>
                       </TableCell>
                       {companyData?.periods.map((period) => {
-                        let cellValue = values?.values[period]
-                          ? values?.values[period]
-                          : "-";
+                        let cellValue = getTableCellValue(metricName, values, period);
 
                         if (values?.type === "perc") {
                           return (
@@ -438,9 +467,7 @@ function ValuationModel({ qfsSymbol, onToggleHistory, isHistoryOpen }) {
                         </div>
                       </TableCell>
                       {companyData?.periods.map((period) => {
-                        let cellValue = values?.values[period]
-                          ? values?.values[period]
-                          : "-";
+                        let cellValue = getTableCellValue(metricName, values, period);
 
                         //check if metric is asset turnover
                         const isAto = metricName === "ato";

@@ -1,0 +1,4 @@
+steps to before tests
+
+1. Initialize env by running make setup
+2. run tests you are interested in, e.g. make test-income

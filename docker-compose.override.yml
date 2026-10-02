@@ -24,6 +24,13 @@ services:
     ports:
       - "5433:5432"
 
+  celery_worker:
+    build:
+      context: ./value-investing-backend/valueinvesting
+      target: dev
+    volumes:
+      - ./value-investing-backend/valueinvesting:/app
+
   frontend:
     build:
       context: ./value-investing-frontend/value-investing

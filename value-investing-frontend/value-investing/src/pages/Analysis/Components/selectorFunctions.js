@@ -39,6 +39,8 @@ export function computeNopatBottomUp(data, taxRate, caseIndex) {
 }
 
 export function computeEquityVal(b0, nopat, wacc, noa, g, caseIndex) {
+  if (!b0 || !noa) return null;
+
   //compute residual earnings 1 = (NOPAT - r*NOA)/(1+r)
   var re1 = (nopat[caseIndex] - wacc * noa[caseIndex]) / (1 + wacc);
 
@@ -50,6 +52,7 @@ export function computeEquityVal(b0, nopat, wacc, noa, g, caseIndex) {
 }
 
 export function computeNetOpAssets(data, caseIndex) {
+  if (!data?.operatingAssets || !data?.operatingLiabilities) return null;
   return data.operatingAssets[caseIndex] - data.operatingLiabilities[caseIndex];
 }
 
@@ -81,5 +84,6 @@ export function computeRnoa(nopat, noa, taxRate) {
 }
 
 export function computeAto(data, caseIndex) {
-  return data?.revenue[caseIndex] / data?.netOperatingAssets[caseIndex];
+  if (!data?.revenue || !data?.netOperatingAssets) return null;
+  return data.revenue[caseIndex] / data.netOperatingAssets[caseIndex];
 }

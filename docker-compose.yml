@@ -48,6 +48,24 @@ services:
     networks:
       - value_investing_app_ntw
 
+  celery_worker:
+    build:
+      context: ./value-investing-backend/valueinvesting
+      target: prod
+    container_name: celery_worker
+    entrypoint: ["celery", "-A", "valueinvesting", "worker", "--loglevel=info", "--concurrency=4"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: on-failure
+    env_file:
+      - .env
+      - ./value-investing-backend/valueinvesting/.env
+    networks:
+      - value_investing_app_ntw
+
   frontend:
     build: ./value-investing-frontend/value-investing
     container_name: frontend

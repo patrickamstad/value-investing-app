@@ -71,6 +71,8 @@ INSTALLED_APPS = [
     "quickfs_dj", #quickfs_dj stands for quickfs_django; still name was chosen because of the collision with the offical quickfs python package
     'watchlist',
     'valuation_history',
+    'django_celery_results',
+    'analyst_reports',
 ]
 
 SITE_ID = 1
@@ -233,3 +235,30 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# AWS S3
+AWS_ACCESS_KEY_ID = os.environ.get("ACCESS_KEY")
+AWS_SECRET_ACCESS_KEY = os.environ.get("SECRET_ACCESS_KEY")
+AWS_S3_REGION_NAME = os.environ.get("AWS_REGION")
+AWS_STORAGE_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
+
+# Gemini LLM
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini")
+
+# MinerU OCR
+MINERU_API_URL = os.environ.get("MINERU_API_URL")
+MODAL_KEY = os.environ.get("MODAL_KEY")
+MODAL_SECRET = os.environ.get("MODAL_SECRET")
+
+# Celery
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
+CELERY_RESULT_BACKEND = "django-db"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "UTC"
+CELERY_TASK_TRACK_STARTED = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_TRANSPORT_OPTIONS = {"visibility_timeout": 900}  # 15 min — longer than slowest task

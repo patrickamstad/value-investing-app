@@ -22,7 +22,13 @@ import { computeTotAssets } from "./selectorFunctions";
 
 // const tableColumnWidths = ["30%", "25%", "20%", "25%"];
 
-function AssetTable({ qfsSymbol, tableColumnWidths, scaling }) {
+function AssetTable({
+  qfsSymbol,
+  tableColumnWidths,
+  scaling,
+  displayDivisor = 1,
+  disabled = false,
+}) {
   const [openAsset, setOpenAssets] = useState(true);
   const [openCurrentAsset, setOpenCurrentAsset] = useState(false);
   const [openNonCurrentAssets, setOpenNonCurrentAssets] = useState(false);
@@ -141,7 +147,7 @@ function AssetTable({ qfsSymbol, tableColumnWidths, scaling }) {
             hasCellPadding={true}
             marginLeft=""
             titleType="big"
-            value={(totalAssets / scaling).toFixed(0)}
+            value={(totalAssets / scaling / displayDivisor).toFixed(0)}
           />
           <AssetValCollapsableHeader
             label="Current Assets"
@@ -151,7 +157,7 @@ function AssetTable({ qfsSymbol, tableColumnWidths, scaling }) {
             openCollapse={openAsset}
             hasCellPadding={openAsset ? true : false}
             marginLeft="10px"
-            value={(totalCurrentAssets / scaling).toFixed(0)}
+            value={(totalCurrentAssets / scaling / displayDivisor).toFixed(0)}
           />
           {balanceSheet?.currentAssets?.map((lineItem) => {
             return (
@@ -166,6 +172,8 @@ function AssetTable({ qfsSymbol, tableColumnWidths, scaling }) {
                 category="currentAssets"
                 metric={lineItem.metric}
                 scaling={scaling}
+                displayDivisor={displayDivisor}
+                disabled={disabled}
               />
             );
           })}
@@ -177,7 +185,7 @@ function AssetTable({ qfsSymbol, tableColumnWidths, scaling }) {
             openCollapse={openAsset}
             hasCellPadding={openAsset ? true : false}
             marginLeft="10px"
-            value={(totalNonCurrentAssets / scaling).toFixed(0)}
+            value={(totalNonCurrentAssets / scaling / displayDivisor).toFixed(0)}
           />
           {balanceSheet?.nonCurrentAssets?.map((lineItem) => {
             return (
@@ -192,6 +200,8 @@ function AssetTable({ qfsSymbol, tableColumnWidths, scaling }) {
                 category="nonCurrentAssets"
                 metric={lineItem.metric}
                 scaling={scaling}
+                displayDivisor={displayDivisor}
+                disabled={disabled}
               />
             );
           })}
