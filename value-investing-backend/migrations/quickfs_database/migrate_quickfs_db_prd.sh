@@ -13,7 +13,7 @@ set -e
 #set +a
 
 # Run migration scripts
-python download_quickfs_data.py
+python download_eodhd_data.py
 python main.py
 python migrate_close_prices.py
 python migrate_op_assets_and_liabilities.py
